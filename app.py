@@ -8,9 +8,9 @@ from flask import Flask, request, redirect, url_for, render_template_string
 
 app = Flask(__name__)
 
-VERSION = "v2"
+VERSION = "v3"
 
-# Works on Windows and in Docker.
+# Database configuration for Windows and Docker.
 DEFAULT_DB = Path(__file__).resolve().parent / "sales.db"
 DB_PATH = Path(os.getenv("DB_PATH", str(DEFAULT_DB))).resolve()
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sales System - V2</title>
+    <title>Sales System - V3</title>
 
     <style>
         body {
@@ -55,7 +55,7 @@ HTML_PAGE = """
         }
 
         main {
-            max-width: 900px;
+            max-width: 950px;
             margin: 30px auto;
             padding: 28px;
             background: white;
@@ -65,10 +65,6 @@ HTML_PAGE = """
 
         h1, h2 {
             color: #243b64;
-        }
-
-        .version {
-            color: #64748b;
         }
 
         input, button {
@@ -96,10 +92,23 @@ HTML_PAGE = """
         }
 
         .message {
+            padding: 12px;
             background: #e6f6e9;
             color: #176534;
-            padding: 12px;
             border-radius: 6px;
+        }
+
+        .summary {
+            padding: 22px;
+            background: #e8effb;
+            border-radius: 8px;
+            margin: 25px 0;
+        }
+
+        .revenue {
+            font-size: 32px;
+            font-weight: bold;
+            color: #243b64;
         }
 
         .table-wrapper {
@@ -133,7 +142,7 @@ HTML_PAGE = """
 <main>
     <h1>Sales System</h1>
     <p>Registration Number: 24MIS0356</p>
-    <p class="version">Version 2 — View Sales</p>
+    <p>Version 3 — Total Revenue</p>
 
     <h2>Add Sale - Record Sale</h2>
 
@@ -171,8 +180,13 @@ HTML_PAGE = """
         <button type="submit">Record Sale</button>
     </form>
 
+    <section class="summary">
+        <h2>Total Revenue</h2>
+        <div class="revenue">₹{{ "%.2f"|format(revenue) }}</div>
+        <p>Number of recorded sales: {{ sales|length }}</p>
+    </section>
+
     <h2>View Sales</h2>
-    <p>All recorded sales are listed below.</p>
 
     <div class="table-wrapper">
         <table>
@@ -218,17 +232,22 @@ HTML_PAGE = """
 @app.get("/")
 def index():
     with get_db() as db:
-        sales = db.execute(
-            """
+        sales = db.execute("""
             SELECT id, product, quantity, price
             FROM sales
             ORDER BY id DESC
-            """
-        ).fetchall()
+        """).fetchall()
+
+    # Total revenue is the sum of quantity multiplied by unit price.
+    revenue = sum(
+        sale["quantity"] * sale["price"]
+        for sale in sales
+    )
 
     return render_template_string(
         HTML_PAGE,
         sales=sales,
+        revenue=revenue,
         saved=request.args.get("saved") == "1"
     )
 
@@ -256,22 +275,20 @@ def add_sale():
     except (ValueError, TypeError, OverflowError):
         return (
             "Invalid details. Enter a product, positive "
-            "whole-number quantity and valid price.",
+            "whole-number quantity and valid unit price.",
             400
         )
 
     try:
         with get_db() as db:
-            db.execute(
-                """
+            db.execute("""
                 INSERT INTO sales (product, quantity, price)
                 VALUES (?, ?, ?)
-                """,
-                (product, quantity, price)
-            )
+            """, (product, quantity, price))
+
     except sqlite3.Error:
         app.logger.exception("Failed to record sale")
-        return "Unable to record sale.", 500
+        return "Unable to record the sale.", 500
 
     return redirect(url_for("index", saved="1"))
 
@@ -294,3 +311,4 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", "5000")),
         debug=False
     )
+
