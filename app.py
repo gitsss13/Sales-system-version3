@@ -1,5 +1,6 @@
 
 import os
+import math
 import sqlite3
 from pathlib import Path
 
@@ -7,14 +8,11 @@ from flask import Flask, request, redirect, url_for, render_template_string
 
 app = Flask(__name__)
 
-# Version 1: Add Sale only
-VERSION = "v1"
+VERSION = "v2"
 
-# Database path works in Windows and Docker.
+# Works on Windows and in Docker.
 DEFAULT_DB = Path(__file__).resolve().parent / "sales.db"
 DB_PATH = Path(os.getenv("DB_PATH", str(DEFAULT_DB))).resolve()
-
-# Create the database directory if it does not exist.
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -30,8 +28,8 @@ def initialize_db():
             CREATE TABLE IF NOT EXISTS sales (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product TEXT NOT NULL,
-                quantity INTEGER NOT NULL,
-                price REAL NOT NULL
+                quantity INTEGER NOT NULL CHECK(quantity > 0),
+                price REAL NOT NULL CHECK(price > 0)
             )
         """)
 
@@ -45,8 +43,7 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <title>Sales System - V1</title>
+    <title>Sales System - V2</title>
 
     <style>
         body {
@@ -58,12 +55,12 @@ HTML_PAGE = """
         }
 
         main {
-            max-width: 650px;
-            margin: 40px auto;
-            padding: 30px;
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 28px;
             background: white;
             border-radius: 10px;
-            box-shadow: 0 3px 15px rgba(0, 0, 0, 0.08);
+            box-shadow: 0 3px 15px rgba(0, 0, 0, 0.07);
         }
 
         h1, h2 {
@@ -78,7 +75,7 @@ HTML_PAGE = """
             box-sizing: border-box;
             width: 100%;
             padding: 12px;
-            margin: 10px 0;
+            margin: 8px 0;
         }
 
         input {
@@ -98,18 +95,36 @@ HTML_PAGE = """
             background: #172a4a;
         }
 
-        .success {
-            padding: 15px;
+        .message {
             background: #e6f6e9;
             color: #176534;
+            padding: 12px;
             border-radius: 6px;
         }
 
-        .error {
-            padding: 15px;
-            background: #fee2e2;
-            color: #991b1b;
-            border-radius: 6px;
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 18px;
+        }
+
+        th, td {
+            border: 1px solid #dce1e8;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background: #e8effb;
+        }
+
+        .empty {
+            text-align: center;
+            color: #64748b;
         }
     </style>
 </head>
@@ -117,14 +132,13 @@ HTML_PAGE = """
 <body>
 <main>
     <h1>Sales System</h1>
-
     <p>Registration Number: 24MIS0356</p>
-    <p class="version">Version 1 — Add Sale</p>
+    <p class="version">Version 2 — View Sales</p>
 
-    <h2>Record a New Sale</h2>
+    <h2>Add Sale - Record Sale</h2>
 
-    {% if message %}
-        <p class="{{ message_type }}">{{ message }}</p>
+    {% if saved %}
+        <p class="message">Sale recorded successfully!</p>
     {% endif %}
 
     <form method="post" action="{{ url_for('add_sale') }}">
@@ -157,10 +171,44 @@ HTML_PAGE = """
         <button type="submit">Record Sale</button>
     </form>
 
-    <p>
-        This version allows the user to enter sale details
-        and save the record in the database.
-    </p>
+    <h2>View Sales</h2>
+    <p>All recorded sales are listed below.</p>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Sale ID</th>
+                    <th>Product</th>
+                    <th>Quantity</th>
+                    <th>Unit Price</th>
+                    <th>Sale Amount</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for sale in sales %}
+                <tr>
+                    <td>{{ sale['id'] }}</td>
+                    <td>{{ sale['product'] }}</td>
+                    <td>{{ sale['quantity'] }}</td>
+                    <td>₹{{ "%.2f"|format(sale['price']) }}</td>
+                    <td>
+                        ₹{{ "%.2f"|format(
+                            sale['quantity'] * sale['price']
+                        ) }}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="empty">
+                        No sales recorded yet.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </main>
 </body>
 </html>
@@ -169,10 +217,19 @@ HTML_PAGE = """
 
 @app.get("/")
 def index():
+    with get_db() as db:
+        sales = db.execute(
+            """
+            SELECT id, product, quantity, price
+            FROM sales
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
     return render_template_string(
         HTML_PAGE,
-        message=request.args.get("message", ""),
-        message_type=request.args.get("type", "success")
+        sales=sales,
+        saved=request.args.get("saved") == "1"
     )
 
 
@@ -189,15 +246,17 @@ def add_sale():
             or len(product) > 100
             or quantity <= 0
             or quantity > 1_000_000
+            or not math.isfinite(price)
             or price <= 0
             or price > 1_000_000_000
+            or not math.isfinite(quantity * price)
         ):
             raise ValueError
 
     except (ValueError, TypeError, OverflowError):
         return (
-            "Invalid input. Enter a product, positive whole-number "
-            "quantity and valid unit price.",
+            "Invalid details. Enter a product, positive "
+            "whole-number quantity and valid price.",
             400
         )
 
@@ -210,16 +269,11 @@ def add_sale():
                 """,
                 (product, quantity, price)
             )
-
     except sqlite3.Error:
         app.logger.exception("Failed to record sale")
-        return "Unable to save the sale. Please try again.", 500
+        return "Unable to record sale.", 500
 
-    return redirect(url_for(
-        "index",
-        message="Sale recorded successfully!",
-        type="success"
-    ))
+    return redirect(url_for("index", saved="1"))
 
 
 @app.get("/health")
